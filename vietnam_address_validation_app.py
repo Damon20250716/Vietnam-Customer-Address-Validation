@@ -1,120 +1,141 @@
 import streamlit as st
 import pandas as pd
-import os
+import io
 
-def normalize_address(s):
-    return str(s).strip().lower()
+st.set_page_config(page_title="Vietnam Address Validation Tool", layout="wide")
+st.title("🇻🇳 Vietnam Address Validation Tool")
 
-def match_address(old, new):
-    return normalize_address(old) == normalize_address(new)
+def load_excel(file):
+    return pd.read_excel(file)
 
-def is_valid_change(old_line3, new_line3):
-    return normalize_address(old_line3) != normalize_address(new_line3)
+def normalize_text(s):
+    return str(s).strip().lower() if pd.notna(s) else ""
 
-def expand_billing_to_three_rows(row, upload_columns):
-    billing_rows = []
-    for code in ['1', '2', '6']:
-        new_row = row.copy()
-        new_row['Address Code'] = code
-        billing_rows.append(new_row[upload_columns])
-    return billing_rows
+def prepare_upload_rows(account, line1, line2, line3, code_list):
+    rows = []
+    for code in code_list:
+        rows.append({
+            "Account Number": account,
+            "Address Type Code": code,
+            "New Address Line 1": line1,
+            "New Address Line 2": line2,
+            "New Address Line 3": line3
+        })
+    return rows
 
-def convert_to_upload_template(df):
-    upload_data = []
-    upload_columns = [
-        'Customer Code', 'Company Name', 'Address Code',
-        'New Address Line 1', 'New Address Line 2', 'New Address Line 3',
-        'City / Province', 'Contact Name', 'Phone Number', 'Email'
-    ]
+def validate_addresses(forms_df, ups_df):
+    matched = []
+    unmatched = []
+    upload_rows = []
 
-    for _, row in df.iterrows():
-        address_type = row['Address Type']
-        if address_type == '01':  # All
-            upload_data.append(row[upload_columns])
-        elif address_type == '03':  # Billing → split into 3 rows
-            upload_data.extend(expand_billing_to_three_rows(row, upload_columns))
-        else:
-            upload_data.append(row[upload_columns])
+    # Normalize for comparison
+    ups_df["Account Number"] = ups_df["Account Number"].astype(str).str.strip().str.lower()
+    forms_df["Account Number"] = forms_df["Account Number"].astype(str).str.strip().str.lower()
 
-    return pd.DataFrame(upload_data)
+    ups_accounts = set(ups_df["Account Number"])
 
-def main():
-    st.title("Vietnam Customer Address Validation Tool")
+    for _, row in forms_df.iterrows():
+        account = normalize_text(row["Account Number"])
+        if account not in ups_accounts:
+            row["Issue"] = "Account not found in UPS system"
+            unmatched.append(row)
+            continue
 
-    forms_file = st.file_uploader("Upload Microsoft Forms Response File", type=["xlsx"])
-    ups_file = st.file_uploader("Upload UPS System File", type=["xlsx"])
+        use_all = normalize_text(row.get("Is Your New Billing Address the Same as Your Pickup and Delivery Address?")) == "yes"
 
-    if forms_file and ups_file:
-        forms_df = pd.read_excel(forms_file)
-        ups_df = pd.read_excel(ups_file)
-
-        matched_rows = []
-        unmatched_rows = []
-
-        for _, form_row in forms_df.iterrows():
-            account = str(form_row.get("Account Number")).strip()
-            is_all = str(form_row.get("Is Your New Billing Address the Same as Your Pickup and Delivery Address?")).strip().lower() == "yes"
-
-            if is_all:
-                match_rows = ups_df[(ups_df["Account Number"].astype(str).str.strip() == account)]
-                if not match_rows.empty:
-                    for _, sys_row in match_rows.iterrows():
-                        addr_type = sys_row["Address Type"]
-                        if addr_type in ["01", "02", "03", "13"]:
-                            match = {
-                                'Customer Code': account,
-                                'Company Name': form_row.get("Company Name", ""),
-                                'Address Type': "01",
-                                'Address Code': '01',
-                                'New Address Line 1': form_row.get("New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", ""),
-                                'New Address Line 2': form_row.get("New Address Line 2 (Street Name)-In English Only", ""),
-                                'New Address Line 3': form_row.get("New Address Line 3 (Ward/Commune)-In English Only", ""),
-                                'City / Province': form_row.get("City / Province", ""),
-                                'Contact Name': form_row.get("Full Name of Contact-In English Only", ""),
-                                'Phone Number': form_row.get("Contact Phone Number", ""),
-                                'Email': form_row.get("Please Provide Your Email Address-In English Only", "")
-                            }
-                            matched_rows.append(match)
-                        break
-                else:
-                    unmatched_rows.append(form_row)
+        if use_all:
+            line1 = row.get("New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
+            line2 = row.get("New Address Line 2 (Street Name)-In English Only", "")
+            line3 = row.get("New Address Line 3 (Ward/Commune)-In English Only", "")
+            if any(pd.notna(v) and str(v).strip() != "" for v in [line1, line2, line3]):
+                matched.append({
+                    "Account Number": account,
+                    "Type": "01",
+                    "Line 1": line1,
+                    "Line 2": line2,
+                    "Line 3": line3
+                })
+                upload_rows.extend(prepare_upload_rows(account, str(line1).strip(), str(line2).strip(), str(line3).strip(), [1, 2, 6]))
             else:
-                found_match = False
-                for prefix in ["First", "Second", "Third"]:
-                    pickup1 = form_row.get(f"{prefix} New Pick Up Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
-                    pickup2 = form_row.get(f"{prefix} New Pick Up Address Line 2 (Street Name)-In English Only", "")
-                    pickup3 = form_row.get(f"{prefix} New Pick Up Address Line 3 (Ward/Commune)-In English Only", "")
-                    if pickup1 and pickup2:
-                        match_rows = ups_df[(ups_df["Account Number"].astype(str).str.strip() == account) & (ups_df["Address Type"] == "02")]
-                        for _, sys_row in match_rows.iterrows():
-                            if match_address(sys_row["Address Line 1"], pickup1) and match_address(sys_row["Address Line 2"], pickup2):
-                                match = {
-                                    'Customer Code': account,
-                                    'Company Name': form_row.get("Company Name", ""),
-                                    'Address Type': "02",
-                                    'Address Code': '02',
-                                    'New Address Line 1': pickup1,
-                                    'New Address Line 2': pickup2,
-                                    'New Address Line 3': pickup3,
-                                    'City / Province': form_row.get("City / Province", ""),
-                                    'Contact Name': form_row.get("Full Name of Contact-In English Only", ""),
-                                    'Phone Number': form_row.get("Contact Phone Number", ""),
-                                    'Email': form_row.get("Please Provide Your Email Address-In English Only", "")
-                                }
-                                matched_rows.append(match)
-                                found_match = True
-                                break
-                if not found_match:
-                    unmatched_rows.append(form_row)
+                row["Issue"] = "No valid unified address data"
+                unmatched.append(row)
+            continue
 
-        matched_df = pd.DataFrame(matched_rows)
-        unmatched_df = pd.DataFrame(unmatched_rows)
-        upload_df = convert_to_upload_template(matched_df)
+        # “No” case – process individual address blocks
+        valid = False
 
-        st.success("Validation complete.")
-        st.download_button("Download Matched File", matched_df.to_csv(index=False), "matched.csv")
-        st.download_button("Download Unmatched File", unmatched_df.to_csv(index=False), "unmatched.csv")
-        st.download_button("Download Upload Template", upload_df.to_csv(index=False), "upload_template.csv")
+        # Billing Address → 3 rows
+        b1 = row.get("New Billing Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
+        b2 = row.get("New Billing Address Line 2 (Street Name)-In English Only", "")
+        b3 = row.get("New Billing Address Line 3 (Ward/Commune)-In English Only", "")
+        if any(pd.notna(v) and str(v).strip() != "" for v in [b1, b2, b3]):
+            matched.append({"Account Number": account, "Type": "03", "Line 1": b1, "Line 2": b2, "Line 3": b3})
+            upload_rows.extend(prepare_upload_rows(account, str(b1).strip(), str(b2).strip(), str(b3).strip(), [1, 2, 6]))
+            valid = True
 
-if __name__ == "__main__":
-    main()
+        # Delivery Address → 1 row
+        d1 = row.get("New Delivery Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
+        d2 = row.get("New Delivery Address Line 2 (Street Name)-In English Only", "")
+        d3 = row.get("New Delivery Address Line 3 (Ward/Commune)-In English Only", "")
+        if any(pd.notna(v) and str(v).strip() != "" for v in [d1, d2, d3]):
+            matched.append({"Account Number": account, "Type": "13", "Line 1": d1, "Line 2": d2, "Line 3": d3})
+            upload_rows.extend(prepare_upload_rows(account, str(d1).strip(), str(d2).strip(), str(d3).strip(), [5]))
+            valid = True
+
+        # Pickup Addresses → up to 3 rows
+        for i in ["First", "Second", "Third"]:
+            p1 = row.get(f"{i} New Pick Up Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
+            p2 = row.get(f"{i} New Pick Up Address Line 2 (Street Name)-In English Only", "")
+            p3 = row.get(f"{i} New Pick Up Address Line 3 (Ward/Commune)-In English Only", "")
+            if any(pd.notna(v) and str(v).strip() != "" for v in [p1, p2, p3]):
+                matched.append({"Account Number": account, "Type": "02", "Line 1": p1, "Line 2": p2, "Line 3": p3})
+                upload_rows.extend(prepare_upload_rows(account, str(p1).strip(), str(p2).strip(), str(p3).strip(), [4]))
+                valid = True
+
+        if not valid:
+            row["Issue"] = "No valid address block filled"
+            unmatched.append(row)
+
+    matched_df = pd.DataFrame(matched)
+    unmatched_df = pd.DataFrame(unmatched)
+    upload_df = pd.DataFrame(upload_rows)
+
+    return matched_df, unmatched_df, upload_df
+
+def download_excel(df, filename):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    output.seek(0)
+    st.download_button(label=f"📥 Download {filename}", data=output, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# UI
+st.markdown("### 1. Upload Microsoft Forms Response File")
+forms_file = st.file_uploader("Upload Forms Excel file", type=["xlsx"])
+
+st.markdown("### 2. Upload UPS Existing System File")
+ups_file = st.file_uploader("Upload UPS System Excel file", type=["xlsx"])
+
+if forms_file and ups_file:
+    try:
+        forms_df = load_excel(forms_file)
+        ups_df = load_excel(ups_file)
+
+        st.success("✅ Files loaded successfully.")
+
+        matched_df, unmatched_df, upload_df = validate_addresses(forms_df, ups_df)
+
+        st.markdown("### ✅ Matched Records")
+        st.dataframe(matched_df)
+        download_excel(matched_df, "matched_records.xlsx")
+
+        st.markdown("### ⚠️ Unmatched Records (Forms Only)")
+        st.dataframe(unmatched_df)
+        download_excel(unmatched_df, "unmatched_forms_only.xlsx")
+
+        st.markdown("### 📦 Upload Template Format")
+        st.dataframe(upload_df)
+        download_excel(upload_df, "upload_template.xlsx")
+
+    except Exception as e:
+        st.error(f"❌ Error during processing: {e}")
