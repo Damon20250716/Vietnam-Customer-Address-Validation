@@ -32,7 +32,7 @@ def process_files(forms_df, ups_df):
     forms_df['Account Number_norm'] = normalize_col(forms_df['Account Number'])
 
     # Remove tones and strip spaces for relevant UPS address fields to simplify matching
-    for col in ["AC_Name", "Attention_Name", "Address Line 1", "Address Line 2", "City", "Address Line 3", "Postal_Code", "Country_Code", "Address_Country_Code"]:
+    for col in ["AC_Name", "Attention_Name", "Address Line 1", "Address Line 2", "City", "Address Line 3"]:
         if col in ups_df.columns:
             ups_df[col] = ups_df[col].astype(str).apply(remove_tones).str.strip()
 
@@ -128,8 +128,7 @@ def process_files(forms_df, ups_df):
             matched_rows.append(form_row.to_dict())
             processed_form_indices.add(idx)
 
-            # Upload template requires 3 rows with codes 01, 06, 03 and invoice options  (adjusted per sample)
-
+            # Upload template requires 3 rows with codes 01, 06, 03 and invoice options
             # 01 - "All" address type, invoice option blank
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
@@ -145,7 +144,7 @@ def process_files(forms_df, ups_df):
                 "Address_Line22": new_addr3,
                 "Address_Country_Code": ups_row_for_template["Address_Country_Code"]
             })
-            # 06 - secondary code, invoice option blank
+            # 06 - "some secondary code", invoice option blank
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "06",
@@ -265,7 +264,7 @@ def process_files(forms_df, ups_df):
                     "Address_Country_Code": ups_acc_df["Address_Country_Code"].values[0]
                 })
 
-            # Add billing address (expand to 01, 06, 03 with invoice option 1, 2, 6 as in sample)
+            # Add billing address (expand to 01, 06, 03 with invoice option 1, 2, 6)
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "01",
@@ -340,12 +339,17 @@ def process_files(forms_df, ups_df):
         "Address_Line2", "City", "Postal_Code", "Country_Code", "Attention_Name",
         "Address_Line22", "Address_Country_Code"
     ]
-
-    # Sometimes upload_template_df may miss columns if no rows present; fix by reindexing
-    upload_template_df = upload_template_df.reindex(columns=correct_cols, fill_value="")
+    upload_template_df = upload_template_df[correct_cols]
 
     return matched_df, unmatched_df, upload_template_df
 
+# Helper to export dataframe to excel bytes
+def to_excel_bytes(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+        writer.save()
+    return output.getvalue()
 
 # --- Streamlit UI ---
 def main():
@@ -363,4 +367,4 @@ def main():
 
             matched_df, unmatched_df, upload_template_df = process_files(forms_df, ups_df)
 
-            st.success(f"✅ Completed: {len(matched_df)} matched, {len(unmatched_df
+        st.success
