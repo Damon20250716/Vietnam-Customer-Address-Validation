@@ -50,7 +50,6 @@ def process_files(forms_df, ups_df):
         "New Delivery Address Line 2 (Street Name)-In English Only",
         "New Delivery Address Line 3 (Ward/Commune)-In English Only",
         "New Delivery City / Province",
-        # Pickup addresses (up to 3)
         "First New Pick Up Address Line 1 (Address No., Industrial Park Name, etc)-In English Only",
         "First New Pick Up Address Line 2 (Street Name)-In English Only",
         "First New Pick Up Address Line 3 (Ward/Commune)-In English Only",
@@ -128,11 +127,7 @@ def process_files(forms_df, ups_df):
             matched_rows.append(form_row.to_dict())
             processed_form_indices.add(idx)
 
-            # Upload template requires 3 rows with codes 01, 06, 03 and invoice options  (adjusted per sample)
-            # Your sample has codes: 01, 06, 03 and invoice options: blank, blank, 1,2,6 for 03 expanded multiple times.
-            # We replicate that for "same billing" scenario:
-
-            # 01 - "All" address type, invoice option blank
+            # Upload template requires 3 rows with codes 01, 06, 03 and invoice options
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "01",
@@ -147,7 +142,6 @@ def process_files(forms_df, ups_df):
                 "Address_Line22": new_addr3,
                 "Address_Country_Code": ups_row_for_template["Address_Country_Code"]
             })
-            # 06 - "some secondary code", invoice option blank
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "06",
@@ -162,7 +156,6 @@ def process_files(forms_df, ups_df):
                 "Address_Line22": new_addr3,
                 "Address_Country_Code": ups_row_for_template["Address_Country_Code"]
             })
-            # 03 - Billing expanded into invoice options 1,2,6
             for inv_opt in ["1", "2", "6"]:
                 upload_template_rows.append({
                     "AC_NUM": form_row["Account Number"],
@@ -183,28 +176,24 @@ def process_files(forms_df, ups_df):
             # When "No" for billing same as pickup/delivery,
             # Process billing, delivery, and up to 3 pickup addresses separately.
 
-            # Billing address fields
             billing_addr1 = form_row.get("New Billing Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
             billing_addr2 = form_row.get("New Billing Address Line 2 (Street Name)-In English Only", "")
             billing_addr3 = form_row.get("New Billing Address Line 3 (Ward/Commune)-In English Only", "")
             billing_city = form_row.get("New Billing City / Province", "")
 
-            # Delivery address fields
             delivery_addr1 = form_row.get("New Delivery Address Line 1 (Address No., Industrial Park Name, etc)-In English Only", "")
             delivery_addr2 = form_row.get("New Delivery Address Line 2 (Street Name)-In English Only", "")
             delivery_addr3 = form_row.get("New Delivery Address Line 3 (Ward/Commune)-In English Only", "")
             delivery_city = form_row.get("New Delivery City / Province", "")
 
-            # Number of pickup addresses in form
             pickup_num = 0
             try:
                 pickup_num = int(form_row.get("How Many Pick Up Address Do You Have?", 0))
             except:
                 pickup_num = 0
             if pickup_num > 3:
-                pickup_num = 3  # max 3 pickups
+                pickup_num = 3
 
-            # Check pickup addresses from the Form: First, Second, Third New Pick Up Address
             pickup_addrs = []
             for i in range(1, pickup_num + 1):
                 prefix = ["First", "Second", "Third"][i-1] + " New Pick Up Address"
@@ -214,7 +203,6 @@ def process_files(forms_df, ups_df):
                 pu_city = form_row.get(f"{prefix} City / Province", "")
                 pickup_addrs.append((pu_addr1, pu_addr2, pu_addr3, pu_city))
 
-            # Validate address number and street for each type: must exist in UPS system for the account
             def check_address_in_ups(addr1, addr2, addr_type_code):
                 for _, ups_row in ups_acc_df.iterrows():
                     if ups_row["Address Type"] == addr_type_code:
@@ -222,16 +210,13 @@ def process_files(forms_df, ups_df):
                             return ups_row
                 return None
 
-            # Key validation rule 2: Number of pickup addresses must match UPS count
             if pickup_num != ups_pickup_count:
                 unmatched_rows.append(form_row.to_dict())
                 continue
 
-            # Flags to track matching for billing/delivery/pickups
             billing_match = check_address_in_ups(billing_addr1, billing_addr2, "03")
             delivery_match = check_address_in_ups(delivery_addr1, delivery_addr2, "13")
 
-            # Check each pickup address matches UPS
             all_pickups_matched = True
             pickup_matches = []
             for pu_addr in pickup_addrs:
@@ -241,16 +226,13 @@ def process_files(forms_df, ups_df):
                     break
                 pickup_matches.append(match)
 
-            # Key validation rule 1: billing, delivery, pickup addresses number+street must match UPS
             if (billing_match is None) or (delivery_match is None) or not all_pickups_matched:
                 unmatched_rows.append(form_row.to_dict())
                 continue
 
-            # Passed all validation
             matched_rows.append(form_row.to_dict())
             processed_form_indices.add(idx)
 
-            # Add pickup addresses to upload template (code 02, invoice option blank)
             for pu_addr in pickup_addrs:
                 upload_template_rows.append({
                     "AC_NUM": form_row["Account Number"],
@@ -267,15 +249,13 @@ def process_files(forms_df, ups_df):
                     "Address_Country_Code": ups_acc_df["Address_Country_Code"].values[0]
                 })
 
-            # Add billing address (expand to 01, 06, 03 with invoice option 1, 2, 6 as in sample)
-            # According to your sample, billing expands to three rows with AC_Address_Type 01, 06, 03
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "01",
                 "invoice option": "",
                 "AC_Name": ups_acc_df["AC_Name"].values[0],
                 "Address_Line1": billing_addr1,
-                "Address_Line2": "",  # blank as in sample
+                "Address_Line2": "",
                 "City": billing_city,
                 "Postal_Code": ups_acc_df["Postal_Code"].values[0],
                 "Country_Code": ups_acc_df["Country_Code"].values[0],
@@ -313,7 +293,6 @@ def process_files(forms_df, ups_df):
                     "Address_Country_Code": ups_acc_df["Address_Country_Code"].values[0]
                 })
 
-            # Add delivery address (AC_Address_Type 13, invoice option blank)
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "13",
@@ -332,18 +311,26 @@ def process_files(forms_df, ups_df):
     # Add Forms rows never matched to unmatched
     unmatched_rows.extend(forms_df.loc[~forms_df.index.isin(processed_form_indices)].to_dict('records'))
 
-    # Convert lists of dicts back to DataFrames
     matched_df = pd.DataFrame(matched_rows)
     unmatched_df = pd.DataFrame(unmatched_rows)
-    upload_template_df = pd.DataFrame(upload_template_rows)
 
-    # Fix column order of upload template exactly as per sample
-    correct_cols = [
+    expected_keys = [
         "AC_NUM", "AC_Address_Type", "invoice option", "AC_Name", "Address_Line1",
         "Address_Line2", "City", "Postal_Code", "Country_Code", "Attention_Name",
         "Address_Line22", "Address_Country_Code"
     ]
-    upload_template_df = upload_template_df[correct_cols]
+
+    # Validate keys in each row dict before creating DataFrame
+    for i, row in enumerate(upload_template_rows):
+        missing = [k for k in expected_keys if k not in row]
+        extra = [k for k in row if k not in expected_keys]
+        if missing or extra:
+            raise ValueError(f"Row {i} keys mismatch. Missing: {missing}, Extra: {extra}")
+
+    upload_template_df = pd.DataFrame(upload_template_rows, columns=expected_keys)
+
+    # Debug print to verify columns
+    print("Upload template columns:", upload_template_df.columns.tolist())
 
     return matched_df, unmatched_df, upload_template_df
 
@@ -394,5 +381,4 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main
