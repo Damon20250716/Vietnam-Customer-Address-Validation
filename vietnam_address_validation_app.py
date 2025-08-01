@@ -23,6 +23,19 @@ def address_match(new_line1, new_line2, old_line1, old_line2):
             remove_tones(new_line2).strip().lower() == remove_tones(old_line2).strip().lower())
 
 def process_files(forms_df, ups_df):
+    # Strip whitespace from UPS columns
+    ups_df.columns = ups_df.columns.str.strip()
+    st.write("UPS columns detected:", ups_df.columns.tolist())
+
+    required_cols = [
+        "AC_Name", "Postal_Code", "Country_Code",
+        "Address_Country_Code", "Address Line 1", "Address Line 2", "Address Type"
+    ]
+    missing_cols = [col for col in required_cols if col not in ups_df.columns]
+    if missing_cols:
+        st.error(f"Missing required columns in UPS file: {missing_cols}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
     matched_rows = []
     unmatched_rows = []
     upload_template_rows = []
@@ -50,6 +63,7 @@ def process_files(forms_df, ups_df):
         "New Delivery Address Line 2 (Street Name)-In English Only",
         "New Delivery Address Line 3 (Ward/Commune)-In English Only",
         "New Delivery City / Province",
+        # Pickup addresses (up to 3)
         "First New Pick Up Address Line 1 (Address No., Industrial Park Name, etc)-In English Only",
         "First New Pick Up Address Line 2 (Street Name)-In English Only",
         "First New Pick Up Address Line 3 (Ward/Commune)-In English Only",
@@ -127,7 +141,7 @@ def process_files(forms_df, ups_df):
             matched_rows.append(form_row.to_dict())
             processed_form_indices.add(idx)
 
-            # Upload template requires 3 rows with codes 01, 06, 03 and invoice options
+            # Upload template requires 3 rows with codes 01, 06, 03 and invoice options  (adjusted per sample)
             upload_template_rows.append({
                 "AC_NUM": form_row["Account Number"],
                 "AC_Address_Type": "01",
@@ -255,7 +269,7 @@ def process_files(forms_df, ups_df):
                 "invoice option": "",
                 "AC_Name": ups_acc_df["AC_Name"].values[0],
                 "Address_Line1": billing_addr1,
-                "Address_Line2": "",
+                "Address_Line2": "",  # blank as in sample
                 "City": billing_city,
                 "Postal_Code": ups_acc_df["Postal_Code"].values[0],
                 "Country_Code": ups_acc_df["Country_Code"].values[0],
@@ -308,32 +322,20 @@ def process_files(forms_df, ups_df):
                 "Address_Country_Code": ups_acc_df["Address_Country_Code"].values[0]
             })
 
-    # Add Forms rows never matched to unmatched
     unmatched_rows.extend(forms_df.loc[~forms_df.index.isin(processed_form_indices)].to_dict('records'))
 
     matched_df = pd.DataFrame(matched_rows)
     unmatched_df = pd.DataFrame(unmatched_rows)
+    upload_template_df = pd.DataFrame(upload_template_rows)
 
-    expected_keys = [
+    correct_cols = [
         "AC_NUM", "AC_Address_Type", "invoice option", "AC_Name", "Address_Line1",
         "Address_Line2", "City", "Postal_Code", "Country_Code", "Attention_Name",
         "Address_Line22", "Address_Country_Code"
     ]
-
-    # Validate keys in each row dict before creating DataFrame
-    for i, row in enumerate(upload_template_rows):
-        missing = [k for k in expected_keys if k not in row]
-        extra = [k for k in row if k not in expected_keys]
-        if missing or extra:
-            raise ValueError(f"Row {i} keys mismatch. Missing: {missing}, Extra: {extra}")
-
-    upload_template_df = pd.DataFrame(upload_template_rows, columns=expected_keys)
-
-    # Debug print to verify columns
-    print("Upload template columns:", upload_template_df.columns.tolist())
+    upload_template_df = upload_template_df[correct_cols]
 
     return matched_df, unmatched_df, upload_template_df
-
 
 # --- Streamlit UI ---
 def main():
@@ -350,6 +352,10 @@ def main():
             ups_df = pd.read_excel(ups_file)
 
             matched_df, unmatched_df, upload_template_df = process_files(forms_df, ups_df)
+
+            if matched_df is None:
+                # process_files returned early due to missing columns
+                return
 
             st.success(f"✅ Completed: {len(matched_df)} matched, {len(unmatched_df)} unmatched.")
 
@@ -368,17 +374,4 @@ def main():
                 )
             if not unmatched_df.empty:
                 st.download_button(
-                    label="Download Unmatched Records",
-                    data=to_excel_bytes(unmatched_df),
-                    file_name="unmatched_records.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            if not upload_template_df.empty:
-                st.download_button(
-                    label="Download Upload Template",
-                    data=to_excel_bytes(upload_template_df),
-                    file_name="upload_template.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-if __name__ == "__main
+                    label="Download Unmatched
