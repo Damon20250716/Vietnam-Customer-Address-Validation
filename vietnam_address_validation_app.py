@@ -17,20 +17,29 @@ def normalize_address(val):
     val = remove_tones(val)
     return val
 
+def fuzzy_column_match(df_columns, target):
+    """Attempt to find the closest match to a target column name."""
+    for col in df_columns:
+        if normalize_address(col) == normalize_address(target):
+            return col
+    return None
+
 def load_file(uploaded_file, form=True):
     df = pd.read_excel(uploaded_file)
     if form:
-        expected_cols = [
+        required_fields = [
             'Account Number',
             'Is Your New Billing Address the Same as Your Pickup and Delivery Address?',
             'New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only',
-            'New Address Line 2 (Street Name)-In English Only',
-            'New Address Line 3 (Ward/Commune)-In English Only',
-            'City / Province'
+            'New Address Line 2 (Street Name)-In English Only'
         ]
-        for col in expected_cols:
-            if col not in df.columns:
-                raise ValueError(f"Missing column in Forms file: {col}")
+        col_map = {}
+        for field in required_fields:
+            match = fuzzy_column_match(df.columns, field)
+            if not match:
+                raise ValueError(f"Missing column in Forms file: {field}")
+            col_map[field] = match
+        df = df.rename(columns=col_map)
     else:
         if 'AC_NUM' not in df.columns:
             raise ValueError("Missing 'AC_NUM' column in UPS file.")
@@ -54,7 +63,7 @@ def match_address(row, ups_df):
                 break
     else:
         # Logic for billing/pickup/delivery (02/03/13) if needed
-        pass  # Currently no specific case, can be extended
+        pass
 
     return matched_rows
 
