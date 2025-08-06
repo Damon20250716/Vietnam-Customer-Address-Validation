@@ -3,133 +3,126 @@ import pandas as pd
 import unicodedata
 from io import BytesIO
 
-st.set_page_config(page_title="Vietnam Address Validation Tool", layout="wide")
-
-# Remove Vietnamese tone marks
+# --- Helper Functions ---
 def remove_tones(text):
     if not isinstance(text, str):
         return text
     text = unicodedata.normalize('NFD', text)
     return ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
 
-# Normalize string columns (lowercase, strip spaces, remove tones)
-def normalize_col(col):
-    return col.astype(str).str.lower().str.strip().apply(remove_tones)
+def normalize_address(val):
+    if not isinstance(val, str):
+        return ''
+    val = val.strip().lower()
+    val = remove_tones(val)
+    return val
 
-# Load and preprocess files
-def load_file(file, form=True):
-    df = pd.read_excel(file)
-    df.columns = df.columns.str.strip()
+def load_file(uploaded_file, form=True):
+    df = pd.read_excel(uploaded_file)
     if form:
-        df['Account Number'] = df['Account Number'].astype(str).str.strip()
-        df['New Address Line 1'] = normalize_col(df['New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only'])
-        df['New Address Line 2'] = normalize_col(df['New Address Line 2 (Street Name)-In English Only'])
+        expected_cols = [
+            'Account Number',
+            'Is Your New Billing Address the Same as Your Pickup and Delivery Address?',
+            'New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only',
+            'New Address Line 2 (Street Name)-In English Only',
+            'New Address Line 3 (Ward/Commune)-In English Only',
+            'City / Province'
+        ]
+        for col in expected_cols:
+            if col not in df.columns:
+                raise ValueError(f"Missing column in Forms file: {col}")
     else:
+        if 'AC_NUM' not in df.columns:
+            raise ValueError("Missing 'AC_NUM' column in UPS file.")
         df['AC_NUM'] = df['AC_NUM'].astype(str).str.strip()
-        df['Address_Line1'] = normalize_col(df['Address_Line1'])
-        df['Address_Line2'] = normalize_col(df['Address_Line2'])
     return df
 
-# Match logic
-def match_addresses(form_df, ups_df):
-    matched = []
-    unmatched = []
+def match_address(row, ups_df):
+    account = str(row['Account Number']).strip()
+    same_address = row['Is Your New Billing Address the Same as Your Pickup and Delivery Address?'].strip().lower() == 'yes'
+    new_line1 = normalize_address(row['New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only'])
+    new_line2 = normalize_address(row['New Address Line 2 (Street Name)-In English Only'])
 
-    for _, row in form_df.iterrows():
-        account = row['Account Number']
-        new_line1 = row['New Address Line 1']
-        new_line2 = row['New Address Line 2']
-        billing_same = row.get('Is Your New Billing Address the Same as Your Pickup and Delivery Address?', '').strip().lower()
-        matched_rows = ups_df[ups_df['AC_NUM'] == account]
-
-        if matched_rows.empty:
-            row['Unmatched Reason'] = 'Account not found in UPS file'
-            unmatched.append(row)
-            continue
-
-        found = False
-        for _, old_row in matched_rows.iterrows():
-            old_line1 = old_row['Address_Line1']
-            old_line2 = old_row['Address_Line2']
-
-            # Must match both address no. and street, case-insensitive and no tones
-            if new_line1 in old_line1 and new_line2 in old_line2:
-                match_info = {
-                    'AC_NUM': account,
-                    'AC_Address_Type': '01' if billing_same == 'yes' else '',
-                    'AC_Name': old_row['AC_Name'],
-                    'Address_Line1': remove_tones(row['New Address Line 1 (Address No., Industrial Park Name, etc)-In English Only']),
-                    'Address_Line2': remove_tones(row['New Address Line 2 (Street Name)-In English Only']),
-                    'City': row['City / Province'],
-                    'Postal_Code': '',
-                    'Country_Code': 'VN',
-                    'Attention_Name': row.get('Full Name of Contact-In English Only', ''),
-                    'Address_Line22': row.get('New Address Line 3 (Ward/Commune)-In English Only', ''),
-                    'Address_Country_Code': 'VN'
-                }
-                matched.append(match_info)
-                found = True
+    matched_rows = []
+    if same_address:
+        filtered = ups_df[ups_df['AC_NUM'].astype(str).str.strip() == account]
+        for _, sys_row in filtered.iterrows():
+            sys_line1 = normalize_address(sys_row['Address_Line1'])
+            sys_line2 = normalize_address(sys_row['Address_Line2'])
+            if new_line1 in sys_line1 and new_line2 in sys_line2:
+                matched_rows.append((sys_row, '01'))
                 break
+    else:
+        # Logic for billing/pickup/delivery (02/03/13) if needed
+        pass  # Currently no specific case, can be extended
 
-        if not found:
-            row['Unmatched Reason'] = 'Address not similar enough to UPS record'
-            unmatched.append(row)
+    return matched_rows
 
-    return pd.DataFrame(matched), pd.DataFrame(unmatched)
+def generate_upload_template(matched):
+    rows = []
+    for match in matched:
+        sys_row, code = match
+        if code == '01':
+            for c in ['1', '2', '6']:
+                rows.append({
+                    'AC_NUM': sys_row['AC_NUM'],
+                    'AC_Address_Type': c,
+                    'AC_Name': sys_row['AC_Name'],
+                    'Address_Line1': sys_row['Address_Line1'],
+                    'Address_Line2': sys_row['Address_Line2'],
+                    'City': sys_row['City'],
+                    'Postal_Code': sys_row['Postal_Code'],
+                    'Country_Code': sys_row['Country_Code'],
+                    'Attention_Name': sys_row['Attention_Name'],
+                    'Address_Line22': sys_row['Address_Line2'],
+                    'Address_Country_Code': sys_row['Country_Code'],
+                })
+    return pd.DataFrame(rows)
 
-# Expand matched data to upload format
-def expand_matched_for_upload(matched_df):
-    expanded = []
-
-    for _, row in matched_df.iterrows():
-        acct = row['AC_NUM']
-        if row['AC_Address_Type'] == '01':
-            for code in ['1', '2', '6']:
-                new_row = row.copy()
-                new_row['AC_Address_Type'] = code
-                expanded.append(new_row)
-        else:
-            row['AC_Address_Type'] = '02'  # pickup
-            expanded.append(row)
-
-    return pd.DataFrame(expanded)
-
-# File export helper
-def to_excel_file(dfs, sheetnames):
+def convert_df(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for df, name in zip(dfs, sheetnames):
-            df.to_excel(writer, index=False, sheet_name=name)
-    output.seek(0)
-    return output
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
-# App UI
-st.title("Vietnam Customer Address Validation Tool")
+# --- Streamlit UI ---
+st.title("Vietnam Address Validation Tool v2")
 
-form_file = st.file_uploader("Upload Microsoft Forms Response File", type=["xlsx"])
-ups_file = st.file_uploader("Upload UPS System Address File", type=["xlsx"])
+form_file = st.file_uploader("Upload Microsoft Forms Response File (.xlsx)", type=["xlsx"])
+ups_file = st.file_uploader("Upload UPS System File (.xlsx)", type=["xlsx"])
 
 if form_file and ups_file:
-    with st.spinner("Processing..."):
-        form_df = load_file(form_file, form=True)
+    try:
+        forms_df = load_file(form_file, form=True)
         ups_df = load_file(ups_file, form=False)
 
-        matched_df, unmatched_df = match_addresses(form_df, ups_df)
-        upload_df = expand_matched_for_upload(matched_df)
+        matched_results = []
+        unmatched_rows = []
 
-        st.success("Validation complete.")
+        for _, row in forms_df.iterrows():
+            try:
+                matched = match_address(row, ups_df)
+                if matched:
+                    matched_results.extend(matched)
+                else:
+                    row['Unmatched Reason'] = 'No matching AC_NUM or Address Line mismatch'
+                    unmatched_rows.append(row)
+            except Exception as e:
+                row['Unmatched Reason'] = str(e)
+                unmatched_rows.append(row)
 
-        st.subheader("Matched Addresses")
-        st.write(matched_df)
+        matched_df = pd.DataFrame([dict(sys_row) | {'Address_Type_Code': code} for sys_row, code in matched_results])
+        unmatched_df = pd.DataFrame(unmatched_rows)
 
-        st.subheader("Unmatched Addresses with Reason")
-        st.write(unmatched_df)
+        st.success(f"Matched: {len(matched_df)}, Unmatched: {len(unmatched_df)}")
 
-        st.subheader("Formatted Upload Template")
-        st.write(upload_df)
+        # Show download buttons
+        st.download_button("Download Matched File", convert_df(matched_df), file_name="Matched_Results.xlsx")
+        st.download_button("Download Unmatched File", convert_df(unmatched_df), file_name="Unmatched_Responses.xlsx")
 
-        excel_data = to_excel_file(
-            [matched_df, unmatched_df, upload_df],
-            ["Matched", "Unmatched", "Upload_Template"]
-        )
-        st.download_button("Download All Results", excel_data, file_name="validation_results.xlsx")
+        # Uploading template
+        template_df = generate_upload_template(matched_results)
+        st.download_button("Download Upload Template", convert_df(template_df), file_name="Upload_Template.xlsx")
+
+    except Exception as e:
+        st.error(f"❌ An error occurred: {str(e)}")
